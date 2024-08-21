@@ -45,6 +45,7 @@ public class Transform {
             paramSubs.put(variable(f.parameters().get(i)), makeParamCall(i));
         }
 
+        /*
         var res = Traverse.traverse((expr) -> {
             if (expr instanceof ANF.Var v) {
                return paramSubs.getOrDefault(v,v);
@@ -52,8 +53,9 @@ public class Transform {
                 return expr;
             }
         }, outerLetRec);
+         */
 
-        return (ANF.LetRec) res;
+        return outerLetRec;
     }
 
     private static ANF.FunApply makeParamCall(int index) {
@@ -66,7 +68,8 @@ public class Transform {
     public ANF.LetRec transformOuterBody(Body b) {
         var entry = b.entryBlock();
         ANF.Function entry_f = transformBlock(entry);
-        entry_f = function(entry_f.name(), List.of(), entry_f.expBody());
+        var params = b.entryBlock().parameters().stream().map(ANF::variable).toList();
+        entry_f = function(entry_f.name(), params, entry_f.expBody());
 
         var funmap = letRecConstruction(b);
         var childfuns = funmap.keySet().stream().filter((block) -> block.immediateDominator() == b.entryBlock()).map(funmap::get).toList();

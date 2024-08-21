@@ -74,7 +74,8 @@ public class ANFPrinter {
                     w.in();
                     printFunctions(funs, w);
                     w.out();
-                    w.write("in\n{\n");
+                    w.write("in \n");
+                    w.write("{\n");
                     w.in();
                     print(exprBody, w);
                     w.out();
@@ -83,7 +84,7 @@ public class ANFPrinter {
                 case ANF.IfThen(var cond, var trueExp, var falseExp) -> {
                     w.write("if ");
                     printTerm(cond, w);
-                    w.write("then {\n");
+                    w.write(" then {\n");
                     w.in();
                     print(trueExp, w);
                     w.out();
