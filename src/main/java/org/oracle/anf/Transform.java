@@ -25,25 +25,21 @@
 
 package org.oracle.anf;
 
-import org.oracle.anf.util.Traverse;
-
-import java.lang.reflect.code.Block;
-import java.lang.reflect.code.Body;
-import java.lang.reflect.code.Op;
+import java.lang.reflect.code.*;
 import java.lang.reflect.code.op.CoreOp;
+import java.lang.reflect.code.type.FunctionType;
 import java.util.*;
-
-import static org.oracle.anf.ANF.*;
+import java.util.function.Function;
 
 public class Transform {
 
-    public ANF.LetRec transform(CoreOp.FuncOp f) {
-        ANF.LetRec outerLetRec = transformOuterBody(f.body());
+    public CoreOp.LetRecExp transform(CoreOp.FuncOp f) {
+        CoreOp.LetRecExp outerLetRec = transformOuterBody(f.body());
 
-        HashMap<ANF.Var,ANF.Expression> paramSubs = new HashMap<>();
-        for (int i =0; i < f.parameters().size(); i++) {
-            paramSubs.put(variable(f.parameters().get(i)), makeParamCall(i));
-        }
+        //HashMap<ANF.Var,ANF.Expression> paramSubs = new HashMap<>();
+        //for (int i =0; i < f.parameters().size(); i++) {
+        //    paramSubs.put(f.parameters().get(i)), makeParamCall(i));
+       // }
 
         /*
         var res = Traverse.traverse((expr) -> {
@@ -57,68 +53,77 @@ public class Transform {
 
         return outerLetRec;
     }
-
+/*
     private static ANF.FunApply makeParamCall(int index) {
         return funApply(variable("getParam"),List.of(constant(index)),
                 FunKind.PRIMITIVE);
     }
 
+ */
+
     //Outer body corresponds to outermost letrec
     //F_p
-    public ANF.LetRec transformOuterBody(Body b) {
+    public CoreOp.LetRecExp transformOuterBody(Body b) {
         var entry = b.entryBlock();
-        ANF.Function entry_f = transformBlock(entry);
-        var params = b.entryBlock().parameters().stream().map(ANF::variable).toList();
-        entry_f = function(entry_f.name(), params, entry_f.expBody());
+        CoreOp.FuncOp entry_f = transformBlock(entry);
 
         var funmap = letRecConstruction(b);
         var childfuns = funmap.keySet().stream().filter((block) -> block.immediateDominator() == b.entryBlock()).map(funmap::get).toList();
 
-        ArrayList<ANF.Function> afunctions = new ArrayList<>(childfuns);
+        ArrayList<CoreOp.FuncOp> afunctions = new ArrayList<>(childfuns);
         afunctions.addFirst(entry_f);
-        return letRec(afunctions, funApply(entry_f.name(),List.of(),FunKind.FC));
+        return CoreOp.letRecExp(afunctions, CoreOp.funApp(entry, List.of(), getBlockReturnType(entry)));
+        //return letRec(afunctions, funApply(entry_f.name(),List.of(),FunKind.FC));
     }
 
-    public ANF.Function transformBlock(Block b) {
-        List<ANF.Var> params = b.parameters().stream().map(ANF::variable).toList();
-        ANF.Expression fbody = transformOps(b.ops().iterator());
-        return function(variable(b),params,fbody);
+    public CoreOp.FuncOp transformBlock(Block b) {
+        List<? extends Value> params = b.parameters().stream().toList();
+        Op fbody = transformOps(b);
+        var blockRtype = getBlockReturnType(b);
+        var paramTypes = params.stream().map(Value::type).toList();
+        var fbuilder = CoreOp.func("anonymous", FunctionType.functionType(blockRtype, paramTypes));
+        return fbuilder.body(c -> c.op(fbody));
     }
 
-    public ANF.Expression transformOps(Iterator<Op> ops) {
-        if (ops.hasNext()) {
+    private TypeElement getBlockReturnType(Block b) {
+        var ops = b.ops().iterator();
+        while(ops.hasNext()) {
             var op = ops.next();
-            if (op instanceof Op.Terminating t) {
-                switch (t) {
-                    case CoreOp.ReturnOp rop -> {
-                        if (rop.operands().isEmpty()) {
-                            return constant(0);
-                        }
-                        return variable(rop.operands().getFirst());
-                    }
-                    case CoreOp.ConditionalBranchOp c -> {
-                        var tbranch_args = c.trueBranch().arguments().stream().map(ANF::variable).map(ANF.Term.class::cast).toList();
-                        var fbranch_args = c.falseBranch().arguments().stream().map(ANF::variable).map(ANF.Term.class::cast).toList();
-                        return ifThen(variable(c.predicate()),
-                                funApply(variable(c.trueBranch().targetBlock()),tbranch_args, FunKind.FC),
-                                funApply(variable(c.falseBranch().targetBlock()),fbranch_args, FunKind.FC));
-                    }
-                    case CoreOp.BranchOp br -> {
-                        var tblock = br.branch().targetBlock();
-                        var args = br.branch().arguments().stream().map(ANF::variable).map(ANF.Term.class::cast).toList();
-                        return funApply(variable(tblock),args, FunKind.FC);
-                    }
-                    default -> throw new UnsupportedOperationException("Don't support terminating op type of " + op.opName());
-                }
+            if (op instanceof Op.Terminating) {
+                return op.resultType();
+            }
+        }
+        throw new RuntimeException("Encountered Block with no terminator");
+    }
 
-            } else {
-               return let(variable(op.result()), transformOp(op), transformOps(ops));
+    private CoreOp transformEndOp(Op op) {
+        if (op instanceof Op.Terminating t) {
+            switch (t) {
+                case CoreOp.ConditionalBranchOp c -> {
+                    var tbranch_args = c.trueBranch().arguments().stream().toList();
+                    var fbranch_args = c.falseBranch().arguments();
+                    return CoreOp.ifExp(c.predicate(),
+                            CoreOp.funApp(c.trueBranch().targetBlock(), tbranch_args, c.resultType()),
+                            CoreOp.funApp(c.falseBranch().targetBlock(), fbranch_args, c.resultType())); // TODO: Result Type
+                }
+                case CoreOp.BranchOp br -> {
+                    var tblock = br.branch().targetBlock();
+                    var args = br.branch().arguments().stream().toList();
+                    return CoreOp.funApp(tblock, args, br.resultType()); //TODO: Result Type
+                }
+                default -> {
+                    return (CoreOp) op;
+                }
             }
         } else {
-            throw new UnsupportedOperationException("Encountered prematurely empty op iterator");
+            throw new UnsupportedOperationException("Unsupported non-terminating op.");
         }
     }
 
+    public CoreOp transformOps(Block b) {
+        return CoreOp.letExp(b,transformEndOp(b.ops().getLast()));
+    }
+/*
     public ANF.Term transformOp(Op o) {
         switch (o) {
             case CoreOp.ArithmeticOperation op -> {
@@ -137,11 +142,13 @@ public class Transform {
         }
     }
 
+ */
+
     private static List<ANF.Term> transformOperands(Op op) {
         return op.operands().stream().map(ANF::variable).map(ANF.Term.class::cast).toList();
     }
 
-    private Map<Block, ANF.Function> letRecConstruction(Body b) {
+    private Map<Block, CoreOp.FuncOp> letRecConstruction(Body b) {
         var processedFunctions = leafFunctions(b);
         List<Block> workQueue = new LinkedList<>(processedFunctions.keySet().stream().map(Block::immediateDominator).toList());
         Set<Block> processed = new HashSet<>(processedFunctions.keySet());
@@ -169,11 +176,12 @@ public class Transform {
             var domFuns = domBlocks.stream().map(processedFunctions::get).toList();
 
 
-            var bodyExpr = transformOps(workBlock.ops().iterator());
-            var lr = letRec(domFuns, bodyExpr);
+            var bodyExpr = transformOps(workBlock);
+            var lr = CoreOp.letRecExp(domFuns, bodyExpr);
 
-            var params = workBlock.parameters().stream().map(ANF::variable).toList();
-            var fun = function(variable(workBlock),params,lr);
+            var paramTys = workBlock.parameters().stream().map(Block.Parameter::type).toList();
+            var funBuilder = CoreOp.func(workBlock.toString(), FunctionType.functionType(lr.resultType(),paramTys));
+            var fun = funBuilder.body(c -> c.op(lr));
 
             processedFunctions.put(workBlock,fun);
         }
@@ -181,9 +189,9 @@ public class Transform {
         return processedFunctions;
     }
 
-    private Map<Block, ANF.Function> leafFunctions(Body b) {
+    private Map<Block, CoreOp.FuncOp> leafFunctions(Body b) {
         List<Block> leafBlocks = leafBlocks(b);
-        HashMap<Block, ANF.Function> functions = new HashMap<>();
+        HashMap<Block, CoreOp.FuncOp> functions = new HashMap<>();
 
         for (Block leafBlock : leafBlocks) {
             functions.put(leafBlock, transformBlock(leafBlock));
@@ -206,6 +214,4 @@ public class Transform {
         //Return blocks that dominate nothing. These are leaves.
         return leafBlocks.stream().toList();
     }
-
-    //public static ANF.Expression transform
 }

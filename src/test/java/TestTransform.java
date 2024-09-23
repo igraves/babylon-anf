@@ -31,8 +31,6 @@ import java.lang.runtime.CodeReflection;
 import java.util.List;
 
 import org.oracle.anf.Transform;
-import org.oracle.anf.util.ANFPrinter;
-import org.oracle.anf.util.Labeler;
 
 public class TestTransform {
 
@@ -76,6 +74,7 @@ public class TestTransform {
 
     public static void main(String[] args) {
 
+        //testRun("test2", List.of(int.class, int.class), 20, 1);
         testRun("fibonacci", List.of(int.class), 20);
 
     }
@@ -93,10 +92,12 @@ public class TestTransform {
             System.out.println(fz.toText());
 
             var res = new Transform().transform(fz);
-            var labeled = new Labeler().label(res);
-            ANFPrinter p = new ANFPrinter();
+            //var labeled = new Labeler().label(res);
             //p.print(res);
-            p.print(labeled);
+            //p.print(labeled);
+
+            System.out.println("---------------------");
+            System.out.println(res.toText());
 
         } catch (NoSuchMethodException e) {
             throw new RuntimeException(e);
