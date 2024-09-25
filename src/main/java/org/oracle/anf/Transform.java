@@ -28,28 +28,25 @@ package org.oracle.anf;
 import java.lang.reflect.code.*;
 import java.lang.reflect.code.op.CoreOp;
 import java.lang.reflect.code.type.FunctionType;
+import java.lang.reflect.code.op.AnfDialect;
 import java.util.*;
 import java.util.function.Function;
 
 public class Transform {
 
-    public CoreOp.LetRecExp transform(CoreOp.FuncOp f) {
-        CoreOp.LetRecExp outerLetRec = transformOuterBody(f.body());
+    public AnfDialect.AnfLetRecOp transform(CoreOp.FuncOp f) {
+        var outerBody = f.body();
+        var cc = CopyContext.create();
+        Body.Builder builder = outerBody.copy(cc);
 
-        //HashMap<ANF.Var,ANF.Expression> paramSubs = new HashMap<>();
-        //for (int i =0; i < f.parameters().size(); i++) {
-        //    paramSubs.put(f.parameters().get(i)), makeParamCall(i));
-       // }
+        Block entryBlockToTransform  = outerBody.entryBlock();
+        List<Block> blocksToTransform = outerBody.blocks();
 
-        /*
-        var res = Traverse.traverse((expr) -> {
-            if (expr instanceof ANF.Var v) {
-               return paramSubs.getOrDefault(v,v);
-            } else {
-                return expr;
-            }
-        }, outerLetRec);
-         */
+        // Map entry block
+        // Rebind this block builder to the created context and transformer
+        Block.Builder startingBlock = rebind(cc, ot);
+        cc.mapBlock(entryBlockToTransform, startingBlock);
+        cc.mapValues(entryBlockToTransform.parameters(), args);
 
         return outerLetRec;
     }
@@ -63,7 +60,7 @@ public class Transform {
 
     //Outer body corresponds to outermost letrec
     //F_p
-    public CoreOp.LetRecExp transformOuterBody(Body b) {
+    public AnfDialect.AnfLetRecOp transformOuterBody(Body b) {
         var entry = b.entryBlock();
         CoreOp.FuncOp entry_f = transformBlock(entry);
 
@@ -72,11 +69,11 @@ public class Transform {
 
         ArrayList<CoreOp.FuncOp> afunctions = new ArrayList<>(childfuns);
         afunctions.addFirst(entry_f);
-        return CoreOp.letRecExp(afunctions, CoreOp.funApp(entry, List.of(), getBlockReturnType(entry)));
+        return AnfDialect.letRec(afunctions, CoreOp.funApp(entry, List.of(), getBlockReturnType(entry)));
         //return letRec(afunctions, funApply(entry_f.name(),List.of(),FunKind.FC));
     }
 
-    public CoreOp.FuncOp transformBlock(Block b) {
+    public AnfDialect.AnfFuncOp.Builder transformBlock(Block b) {
         List<? extends Value> params = b.parameters().stream().toList();
         Op fbody = transformOps(b);
         var blockRtype = getBlockReturnType(b);
@@ -96,32 +93,41 @@ public class Transform {
         throw new RuntimeException("Encountered Block with no terminator");
     }
 
-    private CoreOp transformEndOp(Op op) {
+    private Block.Builder transformEndOp(Block.Builder b, Op op) {
         if (op instanceof Op.Terminating t) {
             switch (t) {
                 case CoreOp.ConditionalBranchOp c -> {
                     var tbranch_args = c.trueBranch().arguments().stream().toList();
                     var fbranch_args = c.falseBranch().arguments();
-                    return CoreOp.ifExp(c.predicate(),
-                            CoreOp.funApp(c.trueBranch().targetBlock(), tbranch_args, c.resultType()),
-                            CoreOp.funApp(c.falseBranch().targetBlock(), fbranch_args, c.resultType())); // TODO: Result Type
+
+                    AnfDialect.if_(b.parentBody().ancestorBody(),
+                                   c.trueBranch().targetBlock().terminatingOp().resultType(),c.predicate())
+                            .if_((builder) -> builder.context(). AnfDialect.apply())
+
+                    return AnfDialect.if_(c.predicate(),
+                            AnfDialect.apply(c.trueBranch().targetBlock()., tbranch_args, c.resultType()),
+                            AnfDialect.apply(c.falseBranch().targetBlock(), fbranch_args, c.resultType())); // TODO: Result Type
                 }
                 case CoreOp.BranchOp br -> {
                     var tblock = br.branch().targetBlock();
                     var args = br.branch().arguments().stream().toList();
-                    return CoreOp.funApp(tblock, args, br.resultType()); //TODO: Result Type
+                    //return CoreOp.funApp(tblock, args, br.resultType()); //TODO: Result Type
+                    return b;
                 }
                 default -> {
-                    return (CoreOp) op;
+                    throw new UnsupportedOperationException("Unsupported terminating op encountered.");
                 }
             }
         } else {
-            throw new UnsupportedOperationException("Unsupported non-terminating op.");
+            //return op;
+            b.op(op);
+            return b;
         }
     }
 
-    public CoreOp transformOps(Block b) {
-        return CoreOp.letExp(b,transformEndOp(b.ops().getLast()));
+    public AnfDialect.AnfLetOp transformOps(Block.Builder b) {
+        Body.Builder ancestorBody = b.parentBody().ancestorBody();
+        return AnfDialect.let(ancestorBody,transformEndOp(b.ops().getLast()));
     }
 /*
     public ANF.Term transformOp(Op o) {
@@ -144,11 +150,7 @@ public class Transform {
 
  */
 
-    private static List<ANF.Term> transformOperands(Op op) {
-        return op.operands().stream().map(ANF::variable).map(ANF.Term.class::cast).toList();
-    }
-
-    private Map<Block, CoreOp.FuncOp> letRecConstruction(Body b) {
+    private Map<Block, AnfDialect.AnfFuncOp> letRecConstruction(Body b) {
         var processedFunctions = leafFunctions(b);
         List<Block> workQueue = new LinkedList<>(processedFunctions.keySet().stream().map(Block::immediateDominator).toList());
         Set<Block> processed = new HashSet<>(processedFunctions.keySet());
@@ -177,7 +179,7 @@ public class Transform {
 
 
             var bodyExpr = transformOps(workBlock);
-            var lr = CoreOp.letRecExp(domFuns, bodyExpr);
+            var lr = AnfDialect.letrec();
 
             var paramTys = workBlock.parameters().stream().map(Block.Parameter::type).toList();
             var funBuilder = CoreOp.func(workBlock.toString(), FunctionType.functionType(lr.resultType(),paramTys));
@@ -189,9 +191,9 @@ public class Transform {
         return processedFunctions;
     }
 
-    private Map<Block, CoreOp.FuncOp> leafFunctions(Body b) {
+    private Map<Block, AnfDialect.AnfFuncOp.Builder> leafFunctions(Body b) {
         List<Block> leafBlocks = leafBlocks(b);
-        HashMap<Block, CoreOp.FuncOp> functions = new HashMap<>();
+        HashMap<Block, AnfDialect.AnfFuncOp.Builder> functions = new HashMap<>();
 
         for (Block leafBlock : leafBlocks) {
             functions.put(leafBlock, transformBlock(leafBlock));
